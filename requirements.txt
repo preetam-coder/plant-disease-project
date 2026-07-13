@@ -1,7 +1,8 @@
-numpy
 streamlit>=1.40
-tensorflow
+tensorflow==2.15.0
+numpy
 pillow
+gdown
 python-dotenv
 reportlab
 mistralai
