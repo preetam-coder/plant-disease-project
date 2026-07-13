@@ -1,5 +1,7 @@
 # 🌿 Plant Disease Detection
 
+Project working=https://plant-disease-project-cujphy9uwcmn2rwu52pk3h.streamlit.app/
+
 A smart plant leaf disease detection project built with Python, TensorFlow, and Streamlit. The app lets users upload an image of a plant leaf, predicts whether it is healthy or diseased, displays the confidence score, and provides AI-generated treatment suggestions for detected diseases.
 
 ## Project Overview
