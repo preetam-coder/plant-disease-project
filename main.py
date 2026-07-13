@@ -1,5 +1,6 @@
 import os
 import json
+import gdown
 import re
 from PIL import Image
 import numpy as np
@@ -27,8 +28,25 @@ from reportlab.lib import colors
 
 # Paths
 working_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(working_dir, "final_plant_disease_prediction_model.h5")
-class_indices_path = os.path.join(working_dir, "class_indices.json")
+
+model_path = os.path.join(
+    working_dir,
+    "final_plant_disease_prediction_model.h5"
+)
+
+class_indices_path = os.path.join(
+    working_dir,
+    "class_indices.json"
+)
+
+# Download model automatically if it doesn't exist
+if not os.path.exists(model_path):
+    with st.spinner("Downloading AI model... This may take a few minutes on the first run."):
+        gdown.download(
+            id="1O9QoRZ6GeSSyx7OhEpnx0-gqLrN4d0eE",
+            output=model_path,
+            quiet=False
+        )
 
 # Load environment variables from the project root
 load_dotenv(os.path.join(working_dir, ".env"))
