@@ -1,0 +1,7 @@
+numpy
+streamlit>=1.40
+tensorflow
+pillow
+python-dotenv
+reportlab
+mistralai
