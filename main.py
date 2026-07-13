@@ -43,7 +43,7 @@ class_indices_path = os.path.join(
 if not os.path.exists(model_path):
     with st.spinner("Downloading AI model... This may take a few minutes on the first run."):
         gdown.download(
-            id="1O9QoRZ6GeSSyx7OhEpnx0-gqLrN4d0eE",
+            id="id_value of trained model",
             output=model_path,
             quiet=False
         )
