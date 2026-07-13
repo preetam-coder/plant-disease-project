@@ -98,6 +98,7 @@ streamlit run main.py
 - [final_plant_disease_prediction_model.h5](final_plant_disease_prediction_model.h5) — trained CNN model
 - [class_indices.json](class_indices.json) — class label mapping
 - [requirements.txt](requirements.txt) — Python dependencies
+- testone,2,3-[Test IMAGES]
 - [final_Plant_Disease_Prediction_CNN_Image_Classifier_(1).ipynb](final_Plant_Disease_Prediction_CNN_Image_Classifier_(1).ipynb) — training notebook
 
 ## Summary
