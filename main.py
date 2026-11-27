@@ -2,6 +2,7 @@ import os
 import json
 import gdown
 import re
+import requests
 from PIL import Image
 import numpy as np
 import tensorflow as tf
@@ -10,18 +11,13 @@ from dotenv import load_dotenv
 from io import BytesIO
 from datetime import datetime
 from reportlab.lib.pagesizes import letter, A4
-
-st.set_page_config(page_title="Plant Disease Detection", page_icon="🌿", layout="wide")
-
-try:
-    from groq import Groq
-except ImportError:
-    Groq = None
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib import colors
+
+st.set_page_config(page_title="Plant Disease Detection", page_icon="🌿", layout="wide")
 
 # Paths
 working_dir = os.path.dirname(os.path.abspath(__file__))
@@ -45,7 +41,7 @@ if not os.path.exists(model_path):
             quiet=False
         )
 
-# Load environment variables from the project root
+# Load environment variables from the project root (used for local runs)
 load_dotenv(os.path.join(working_dir, ".env"))
 
 @st.cache_resource
@@ -63,17 +59,21 @@ model = load_trained_model()
 # Load class indices
 class_indices = load_class_indices()
 
-# Configure Groq AI
-api_key = os.getenv("GROQ_API_KEY")
-groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+# ---------- Groq configuration (REST API, no SDK needed) ----------
+def _get_secret(name, default=None):
+    """Read from Streamlit secrets first, then fall back to environment/.env."""
+    try:
+        return st.secrets[name]
+    except Exception:
+        return os.getenv(name, default)
 
-client = None
-if api_key and Groq is not None:
-    client = Groq(api_key=api_key)
+api_key = _get_secret("GROQ_API_KEY")
+groq_model = _get_secret("GROQ_MODEL", "openai/gpt-oss-20b")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ---------- Functions ----------
 def load_and_preprocess_image(image_path, target_size=(224, 224)):
-    img = Image.open(image_path)
+    img = Image.open(image_path).convert("RGB")
     img = img.resize(target_size)
     img_array = np.array(img)
     img_array = np.expand_dims(img_array, axis=0)
@@ -93,18 +93,11 @@ def is_healthy(prediction):
     return "healthy" in prediction.lower()
 
 def get_disease_solution(disease_name):
-    """Generate treatment recommendations using Groq AI."""
-    try:
-        if not api_key:
-            return "⚠️ GROQ_API_KEY not configured. Add it to your environment variables."
+    """Generate treatment recommendations using Groq's REST API."""
+    if not api_key:
+        return "⚠️ GROQ_API_KEY not configured. Add it in Streamlit Secrets."
 
-        if Groq is None:
-            return "⚠️ Groq SDK is unavailable. Install it with: pip install groq"
-
-        if client is None:
-            return "⚠️ Groq client could not be initialized. Check your GROQ_API_KEY."
-
-        prompt = f"""
+    prompt = f"""
 You are an agricultural expert.
 
 Provide a concise, practical treatment solution for the plant disease: {disease_name}
@@ -124,39 +117,55 @@ Keep the response clear, practical, and under 300 words.
 If the disease identification is uncertain, advise the user to confirm it with a local agricultural expert.
 """
 
-        response = client.chat.completions.create(
-            model=groq_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.4,
-            max_tokens=700
+    try:
+        response = requests.post(
+            GROQ_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": groq_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.4,
+                # Reasoning models use part of this budget for thinking, so keep it generous
+                "max_tokens": 1500,
+            },
+            timeout=60,
         )
-
-        content = response.choices[0].message.content
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
         return content.strip() if content else "⚠️ Groq returned an empty treatment recommendation."
 
+    except requests.exceptions.HTTPError as e:
+        return f"⚠️ Groq API error {e.response.status_code}: {e.response.text}"
     except Exception as e:
         return f"⚠️ Error generating treatment recommendation: {str(e)}"
+
+def markdown_to_html(text):
+    """Convert simple markdown from the AI response into HTML for the styled box."""
+    html = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    html = re.sub(r'^\s*#{1,6}\s*(.+?)\s*$', r'<b>\1</b>', html, flags=re.MULTILINE)
+    html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', html)
+    html = re.sub(r'^(\s*)[-*]\s+', r'\1• ', html, flags=re.MULTILINE)
+    html = html.replace('\n\n', '<br/><br/>').replace('\n', '<br/>')
+    return html
 
 def generate_pdf_report(disease_name, solution_text):
     """Generate a PDF report for the disease and treatment solution"""
     buffer = BytesIO()
-    
+
     # Create the PDF document
     doc = SimpleDocTemplate(buffer, pagesize=letter,
-                           topMargin=0.75*inch, bottomMargin=0.75*inch,
-                           leftMargin=0.75*inch, rightMargin=0.75*inch)
-    
+                            topMargin=0.75*inch, bottomMargin=0.75*inch,
+                            leftMargin=0.75*inch, rightMargin=0.75*inch)
+
     # Container for the 'Flowable' objects
     elements = []
-    
+
     # Define styles
     styles = getSampleStyleSheet()
-    
+
     # Title style
     title_style = ParagraphStyle(
         'CustomTitle',
@@ -167,7 +176,7 @@ def generate_pdf_report(disease_name, solution_text):
         alignment=TA_CENTER,
         fontName='Helvetica-Bold'
     )
-    
+
     # Disease name style
     disease_style = ParagraphStyle(
         'DiseaseStyle',
@@ -182,7 +191,7 @@ def generate_pdf_report(disease_name, solution_text):
         borderWidth=2,
         alignment=TA_CENTER
     )
-    
+
     # Solution style
     solution_style = ParagraphStyle(
         'SolutionStyle',
@@ -193,7 +202,7 @@ def generate_pdf_report(disease_name, solution_text):
         leading=16,
         alignment=TA_LEFT
     )
-    
+
     # Metadata style
     meta_style = ParagraphStyle(
         'MetaStyle',
@@ -202,54 +211,50 @@ def generate_pdf_report(disease_name, solution_text):
         textColor=colors.grey,
         alignment=TA_CENTER
     )
-    
-    # Add title
-    title = Paragraph("🌿 Plant Disease Detection Report", title_style)
+
+    # Add title (no emoji: the built-in PDF fonts can't render them)
+    title = Paragraph("Plant Disease Detection Report", title_style)
     elements.append(title)
     elements.append(Spacer(1, 0.2*inch))
-    
+
     # Add timestamp
     timestamp = datetime.now().strftime("%B %d, %Y - %I:%M %p")
     date_para = Paragraph(f"Generated on: {timestamp}", meta_style)
     elements.append(date_para)
     elements.append(Spacer(1, 0.3*inch))
-    
+
     # Add disease name heading
     disease_display = disease_name.replace('___', ' - ').replace('_', ' ')
     disease_heading = Paragraph(f"<b>Detected Disease:</b><br/>{disease_display}", disease_style)
     elements.append(disease_heading)
     elements.append(Spacer(1, 0.3*inch))
-    
+
     # Add section heading for treatment
-    treatment_heading = Paragraph("<b>Treatment Recommendations:</b>", 
-                                 ParagraphStyle('TreatmentHeading',
-                                              parent=styles['Heading3'],
-                                              fontSize=14,
-                                              textColor=colors.HexColor('#00cc99'),
-                                              spaceAfter=15,
-                                              fontName='Helvetica-Bold'))
+    treatment_heading = Paragraph(
+        "<b>Treatment Recommendations:</b>",
+        ParagraphStyle(
+            'TreatmentHeading',
+            parent=styles['Heading3'],
+            fontSize=14,
+            textColor=colors.HexColor('#00cc99'),
+            spaceAfter=15,
+            fontName='Helvetica-Bold'
+        )
+    )
     elements.append(treatment_heading)
-    
-    # Add solution text (convert markdown-like formatting to HTML properly)
-    # First, escape any existing HTML characters
+
+    # Add solution text (markdown-like formatting converted to ReportLab HTML)
     solution_html = solution_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    
-    # Convert markdown bold (**text**) to HTML <b>text</b> using regex
     solution_html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', solution_html)
-    
-    # Convert ### headings to bold
-    solution_html = re.sub(r'###\s*(.+?)(?=\n|$)', r'<b>\1</b>', solution_html)
-    
-    # Convert newlines to <br/> tags
+    solution_html = re.sub(r'^\s*#{1,6}\s*(.+?)\s*$', r'<b>\1</b>', solution_html, flags=re.MULTILINE)
+    solution_html = re.sub(r'^(\s*)[-*]\s+', r'\1• ', solution_html, flags=re.MULTILINE)
     solution_html = solution_html.replace('\n\n', '<br/><br/>')
     solution_html = solution_html.replace('\n', '<br/>')
-    
-    # Remove any remaining asterisks or problematic markdown syntax
-    solution_html = solution_html.replace('*', '•')  # Convert bullet asterisks to bullet points
-    
+    solution_html = solution_html.replace('*', '')  # remove any stray asterisks
+
     solution_para = Paragraph(solution_html, solution_style)
     elements.append(solution_para)
-    
+
     # Add footer
     elements.append(Spacer(1, 0.5*inch))
     footer_text = Paragraph(
@@ -258,10 +263,10 @@ def generate_pdf_report(disease_name, solution_text):
         meta_style
     )
     elements.append(footer_text)
-    
+
     # Build PDF
     doc.build(elements)
-    
+
     buffer.seek(0)
     return buffer
 
@@ -269,7 +274,7 @@ def generate_pdf_report(disease_name, solution_text):
 st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
-        
+
         /* Background image with overlay */
         .stApp {
             background: linear-gradient(rgba(15, 32, 39, 0.85), rgba(44, 83, 100, 0.85));
@@ -388,7 +393,7 @@ st.markdown("""
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
             line-height: 1.8;
         }
-        
+
         .solution-box h3 {
             color: #00ff99;
             margin-bottom: 15px;
@@ -399,12 +404,12 @@ st.markdown("""
             from {opacity: 0; transform: translateY(20px);}
             to {opacity: 1; transform: translateY(0);}
         }
-        
+
         @keyframes slideIn {
             from {opacity: 0; transform: translateX(-20px);}
             to {opacity: 1; transform: translateX(0);}
         }
-        
+
         @keyframes gradient {
             0% {background-position: 0% 50%;}
             50% {background-position: 100% 50%;}
@@ -416,7 +421,7 @@ st.markdown("""
             color: #00ff99 !important;
             font-weight: 600;
         }
-        
+
         /* Info boxes */
         .stAlert {
             background: rgba(255, 255, 255, 0.1);
@@ -446,11 +451,13 @@ if uploaded_image is not None:
         if st.button('🔍 Classify Disease'):
             with st.spinner('🔬 Analyzing leaf...'):
                 prediction, confidence = predict_image_class(model, uploaded_image, class_indices)
-                
+
                 # Store prediction in session state
                 st.session_state.prediction = prediction
                 st.session_state.confidence = confidence
-                
+                # Clear any old solution from a previous image
+                st.session_state.pop("solution", None)
+
                 # Check if healthy
                 if is_healthy(prediction):
                     st.markdown(
@@ -458,7 +465,7 @@ if uploaded_image is not None:
                             <div style='font-size:28px; margin-bottom:10px;'>✨ The leaf is healthy! ✨</div>
                             <div style='font-size:16px; color:#e0e0e0;'>No disease detected</div>
                             <div class='confidence-score'>Confidence: {confidence*100:.2f}%</div>
-                        </div>""", 
+                        </div>""",
                         unsafe_allow_html=True
                     )
                 else:
@@ -469,43 +476,43 @@ if uploaded_image is not None:
                             <div style='font-size:18px; margin-bottom:5px;'>⚠️ Disease Detected</div>
                             <div style='font-size:24px; color:#ff6b6b; font-weight:700;'>{disease_display}</div>
                             <div class='confidence-score'>Confidence: {confidence*100:.2f}%</div>
-                        </div>""", 
+                        </div>""",
                         unsafe_allow_html=True
                     )
 
     # Show solution button only if disease is detected
-    if hasattr(st.session_state, 'prediction') and not is_healthy(st.session_state.prediction):
+    if "prediction" in st.session_state and not is_healthy(st.session_state.prediction):
         st.markdown("---")
         col1, col2, col3 = st.columns([1, 2, 1])
-        
+
         with col2:
             if st.button('💊 Get Treatment Solution'):
                 with st.spinner('🤖 AI is generating treatment recommendations...'):
                     solution = get_disease_solution(st.session_state.prediction)
                     st.session_state.solution = solution
-        
+
         # Display solution if available
-        if hasattr(st.session_state, 'solution'):
+        if "solution" in st.session_state:
             st.markdown(
                 f"""<div class='solution-box'>
                     <h3>🌱 Treatment Recommendations</h3>
-                    {st.session_state.solution}
-                </div>""", 
+                    {markdown_to_html(st.session_state.solution)}
+                </div>""",
                 unsafe_allow_html=True
             )
-            
+
             # Add PDF download button
             st.markdown("<br/>", unsafe_allow_html=True)
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
                 # Generate PDF
                 pdf_buffer = generate_pdf_report(st.session_state.prediction, st.session_state.solution)
-                
+
                 # Create filename with disease name and timestamp
                 disease_safe_name = st.session_state.prediction.replace('___', '_').replace(' ', '_')
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"PlantDisease_Report_{disease_safe_name}_{timestamp}.pdf"
-                
+
                 # Download button
                 st.download_button(
                     label="📥 Download Report as PDF",
